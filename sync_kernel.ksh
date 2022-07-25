@@ -1,5 +1,5 @@
 #!/bin/ksh
- 
+
 log(){
   echo "${@}"
 }
@@ -184,7 +184,7 @@ run_sync(){
         output="$(sudo rsync ${SYNC_OPTS} \
         ${BACKUP_DIR:+--backup --backup-dir=${BACKUP_DIR}/${d}} \
         ${CURRENT_EXCLUDES} ${EXCLUDES} ${SRC}/${d}/ ${DEST}/${d}/)"
-      else 
+      else
         output="$(echo "Failure test output"; sleep 3; false)"
       fi
       rc=$?
@@ -220,17 +220,23 @@ DISABLE_STRICT=y
 SSH_OPTS="${DISABLE_STRICT:+-o StrictHostKeyChecking=no -o CheckHostIP=no} ${SSH_OPTS}"
 HOST=${HOSTNAME:-$(uname -n)}
 LOCAL=${USER}@${HOST}
-LOCAL_ARCH=$(uname -m) 
+LOCAL_ARCH=$(uname -m)
 LOCAL_KERNEL=$(uname -r)
 log "USER = ${USER}, HOST = ${HOST} => LOCAL = ${LOCAL}, LOCAL_ARCH = ${LOCAL_ARCH}, LOCAL_KERNEL = ${LOCAL_KERNEL}"
 
 read_backwards @ REMOTE_HOST REMOTE_USER <<< ${@}
 [ -z "${REMOTE_HOST}" ] \
-  && log "REMOTE_HOST empty" \
-    && exit 1
-REMOTE=${REMOTE_USER:-pi}@${REMOTE_HOST}
-REMOTE_ARCH=$(ssh ${SSH_OPTS} ${REMOTE} uname -m)
-REMOTE_KERNEL=$(ssh ${SSH_OPTS} ${REMOTE} uname -r) 
+  && fatal "REMOTE_HOST empty"
+case ${HOST} in
+${REMOTE_HOST})
+  fatal "Refusing to sync to self"
+;;
+esac
+REMOTE=${REMOTE_USER:=pi}@${REMOTE_HOST}
+ssh ${SSH_OPTS} ${REMOTE} uname -mr | read REMOTE_KERNEL REMOTE_ARCH
+[ -z "${REMOTE_ARCH}" ] \
+  || [ -z "${REMOTE_KERNEL}" ] \
+    && fatal "REMOTE_HOST empty"
 log "REMOTE_USER = ${REMOTE_USER}, REMOTE_HOST = ${REMOTE_HOST} => REMOTE = ${REMOTE}, REMOTE_ARCH = ${REMOTE_ARCH}, REMOTE_KERNEL = ${REMOTE_KERNEL}"
 [ -n "${DIRECTION}" ] \
   || set_direction ${LOCAL_KERNEL} ${REMOTE_KERNEL}
