@@ -88,6 +88,23 @@ extract_flavour(){
   grep -Po '^[0-9.]*\K.*' <<< ${1}
 }
 
+
+function compare_revisions {
+  typeset local local_rev remote remote_rev
+  read local remote kernel <<< ${@}
+  ssh ${SSH_OPTS} ${local} ${FW_REV_CMD} | read local_rev
+  ssh ${SSH_OPTS} ${remote} ${FW_REV_CMD} | read remote_rev
+  case ${local_rev} in
+  ${remote_rev})
+    log "Hosts ${HOST} & ${REMOTE_HOST} running the same revision of kernel ${kernel}, exiting"
+    return 0
+  ;;
+  *)
+    log "Hosts ${HOST} & ${REMOTE_HOST} running different revisions of kernel ${kernel}, updating"
+    return 1
+  esac
+}
+
 function compare_kernels {
   typeset installed local remote
   read local remote <<< ${@}
@@ -107,8 +124,8 @@ function compare_kernels {
       || log "${installed}"
     case "${remote}" in
     ${local})
-      log "Hosts ${HOST} & ${REMOTE_HOST} running the same kernel ${remote}"
-      exit 1
+      compare_revisions ${HOST} ${REMOTE_HOST} ${local} \
+        && exit 1
     ;;
     ${installed}*)
       [ -d /lib/modules/${installed} ] \
@@ -218,6 +235,7 @@ SYNC_OPTS="${COMMON_OPTS} ${UPDATE:+--update} --exclude=\*.bak --exclude=\*.orig
 RESTORE_OPTS="${COMMON_OPTS}"
 DISABLE_STRICT=y
 SSH_OPTS="${DISABLE_STRICT:+-o StrictHostKeyChecking=no -o CheckHostIP=no} ${SSH_OPTS}"
+FW_REV_CMD="cat /boot/.firmware_revision"
 HOST=${HOSTNAME:-$(uname -n)}
 LOCAL=${USER}@${HOST}
 LOCAL_ARCH=$(uname -m)
