@@ -42,8 +42,18 @@ set_trap(){
     && trap -p
 }
 
+compare_versions(){
+  dpkg --compare-versions ${1} lt ${2}
+}
+
+get_latest_version(){
+  compare_versions ${1} ${2} \
+    && echo ${2} \
+    || echo ${1}
+}
+
 set_direction(){
-  dpkg --compare-versions ${1} lt ${2} \
+  compare_versions ${1} ${2} \
     && DIRECTION=from \
     || DIRECTION=to
 }
@@ -59,8 +69,8 @@ restore_backup(){
   trap - INT TERM EXIT
   log "Restoring backup:"
   for d in ${TEST_FILE:-${UPGRADE_DIRS}}; do
-    log "# ${SSH:+${SSH} }sudo rsync ${RESTORE_OPTS} ${BACKUP_DIR}/${d} /${d}"
-    ${SSH} sudo rsync ${RESTORE_OPTS} ${BACKUP_DIR}/${d}/ /${d}
+    log "# ${SSH:+${SSH} }sudo rsync ${DISABLE_STRICT:+-e'ssh ${NO_STRICT_OPTS}'} ${RESTORE_OPTS} ${BACKUP_DIR}/${d} /${d}"
+    ${SSH} sudo rsync ${DISABLE_STRICT:+-e'ssh ${NO_STRICT_OPTS}'} ${RESTORE_OPTS} ${BACKUP_DIR}/${d}/ /${d}
     [ -n "${TEST_FILE}" ] \
       && check_test
   done
@@ -88,7 +98,6 @@ extract_flavour(){
   grep -Po '^[0-9.]*\K.*' <<< ${1}
 }
 
-
 function compare_revisions {
   typeset local local_rev remote remote_rev
   read local remote kernel <<< ${@}
@@ -97,12 +106,13 @@ function compare_revisions {
   case ${local_rev} in
   ${remote_rev})
     log "Hosts ${HOST} & ${REMOTE_HOST} running the same revision of kernel ${kernel}, exiting"
-    return 0
+    [ -z "${FORCE}" ] \
+      && return 0
   ;;
   *)
     log "Hosts ${HOST} & ${REMOTE_HOST} running different revisions of kernel ${kernel}, updating"
-    return 1
   esac
+  return 1
 }
 
 function compare_kernels {
@@ -125,7 +135,8 @@ function compare_kernels {
     case "${remote}" in
     ${local})
       compare_revisions ${HOST} ${REMOTE_HOST} ${local} \
-        && exit 1
+        && [ -z "${FORCE}" ] \
+          && exit 1
     ;;
     ${installed}*)
       [ -d /lib/modules/${installed} ] \
@@ -199,8 +210,9 @@ run_sync(){
     while [ ${tries} -lt ${MAX_TRIES} ]; do
       if [ -z "${TEST_FAILURE}" ]; then
         output="$(sudo rsync ${SYNC_OPTS} \
+        ${DISABLE_STRICT:+-e"ssh ${NO_STRICT_OPTS}"} \
         ${BACKUP_DIR:+--backup --backup-dir=${BACKUP_DIR}/${d}} \
-        ${CURRENT_EXCLUDES} ${EXCLUDES} ${SRC}/${d}/ ${DEST}/${d}/)"
+        ${BOOT_EXCLUDES} ${EXCLUDES} ${SRC}/${d}/ ${DEST}/${d}/)"
       else
         output="$(echo "Failure test output"; sleep 3; false)"
       fi
@@ -230,11 +242,13 @@ MAX_TRIES=${MAX_TRIES:-3}
 UPDATE=${UPDATE-1}
 UPGRADE_DIRS="/lib/modules /opt/vc /boot"
 BACKUP_DIR=/dev/shm/backup
-COMMON_OPTS="-a${DEBUG:+iv}${DRY_RUN:+in}tx --mkpath ${DISABLE_STRICT:+-e'ssh -o StrictHostKeyChecking=no -o CheckHostIP=no'}"
-SYNC_OPTS="${COMMON_OPTS} ${UPDATE:+--update} --exclude=\*.bak --exclude=\*.orig --exclude=\*.txt"
-RESTORE_OPTS="${COMMON_OPTS}"
+NO_STRICT_OPTS='-o StrictHostKeyChecking=no -o CheckHostIP=no -o UserKnownHostsFile=/dev/null -o LogLevel=QUIET'
 DISABLE_STRICT=y
-SSH_OPTS="${DISABLE_STRICT:+-o StrictHostKeyChecking=no -o CheckHostIP=no} ${SSH_OPTS}"
+SSH_OPTS="${DISABLE_STRICT:+${NO_STRICT_OPTS}} ${SSH_OPTS}"
+COMMON_OPTS="-a${DEBUG:+iv}${DRY_RUN:+in}tx --mkpath"
+SYNC_OPTS="${COMMON_OPTS} ${UPDATE:+--update $(rsync --help | grep -q update-links && echo --update-links)} --exclude=\*.bak --exclude=\*.orig --exclude=\*.txt"
+BOOT_EXCLUDES="--exclude=config.txt --exclude=cmdline.txt"
+RESTORE_OPTS="${COMMON_OPTS}"
 FW_REV_CMD="cat /boot/.firmware_revision"
 HOST=${HOSTNAME:-$(uname -n)}
 LOCAL=${USER}@${HOST}
@@ -244,7 +258,7 @@ log "USER = ${USER}, HOST = ${HOST} => LOCAL = ${LOCAL}, LOCAL_ARCH = ${LOCAL_AR
 
 read_backwards @ REMOTE_HOST REMOTE_USER <<< ${@}
 [ -z "${REMOTE_HOST}" ] \
-  && fatal "REMOTE_HOST empty"
+  && fatal "Unable to determine remote host"
 case ${HOST} in
 ${REMOTE_HOST})
   fatal "Refusing to sync to self"
@@ -269,8 +283,8 @@ trap - EXIT
 check_test
 [ -z "${PRINT_ONLY}${TEST}" ] \
   && log -ne "Generating dependencies for kernel " \
-    && installed=$(get_kernel_version $(get_running_kernel)) \
-      && kernel="$(prune_flavour ${installed})" \
+    && latest=$(get_latest_version ${LOCAL_KERNEL} ${REMOTE_KERNEL}) \
+      && kernel="$(prune_flavour ${latest})" \
         && log -ne "${kernel}... " \
           && kernel="${kernel}$(extract_flavour $(${SSH} uname -r))" \
             && ${SSH} sudo depmod -a ${kernel} \
